@@ -23,15 +23,12 @@ public abstract class AbstractOffheapArray {
         private final AtomicLong boxedAddress;
 
         private Deallocator(AtomicLong boxedAddress) {
-            if (boxedAddress.get() == 0) {
-                throw new IllegalArgumentException("Cannot allocate with address 0");
-            }
             this.boxedAddress = boxedAddress;
         }
 
         @Override
         public void run() {
-            UNSAFE.freeMemory(boxedAddress.getAndSet(0));
+            UNSAFE.freeMemory(boxedAddress.getAndSet(-1));
         }
     }
 
@@ -53,17 +50,18 @@ public abstract class AbstractOffheapArray {
         }
         address = UNSAFE.allocateMemory(capacity);
         boxedAddress = new AtomicLong(address);
-        cleaner = Cleaner.create(this, new Deallocator(boxedAddress));
+        Deallocator deallocator = new Deallocator(boxedAddress);
+        cleaner = Cleaner.create(this, deallocator);
         UNSAFE.setMemory(address, capacity, (byte) 0);
         this.capacity = capacity;
     }
 
     protected void resize(long newCapacity) {
-        long currAddress = address;
         if (newCapacity < 0) {
             throw new IllegalArgumentException("Cannot reallocate with capacity=" + newCapacity);
         }
-        if (currAddress == 0 || boxedAddress.get() != currAddress) {
+        long currAddress = address;
+        if (currAddress < 0 || boxedAddress.get() != currAddress) {
             throw new IllegalStateException("Cannot reallocate after freeing");
         }
         long newAddress = UNSAFE.reallocateMemory(currAddress, newCapacity);
@@ -79,13 +77,16 @@ public abstract class AbstractOffheapArray {
     }
 
     public void clear() {
+        if (address < 0) {
+            throw new IllegalStateException("Cannot clear after freeing");
+        }
         if (capacity > 0) {
             UNSAFE.setMemory(address, capacity, (byte) 0);
         }
     }
 
     public void free() {
-        address = 0;
+        address = -1;
         capacity = 0;
 
         // Cleaner is guaranteed to run its runnable at most once, so its fine to
